@@ -20,13 +20,37 @@ function App() {
 
   const checkAudioDevice = async () => {
     try {
+      // First request permission
+      await navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          // Stop the stream immediately
+          stream.getTracks().forEach(track => track.stop());
+          setDeviceStatus('available');
+          setError(null);
+        })
+        .catch(err => {
+          console.error('Permission error:', err);
+          setDeviceStatus('unavailable');
+          setError('Microphone permission denied. Please allow microphone access.');
+          return false;
+        });
+
+      // Then check available devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       const hasAudioDevice = devices.some(device => device.kind === 'audioinput');
-      setDeviceStatus(hasAudioDevice ? 'available' : 'unavailable');
-      setError(hasAudioDevice ? null : 'No audio input device found. Please connect a microphone.');
+      
+      if (!hasAudioDevice) {
+        setDeviceStatus('unavailable');
+        setError('No audio input device found. Please connect a microphone.');
+        return false;
+      }
+
+      return true;
     } catch (err) {
+      console.error('Device check error:', err);
       setDeviceStatus('unavailable');
       setError('Could not access audio devices. Please check permissions.');
+      return false;
     }
   };
 
@@ -51,18 +75,20 @@ function App() {
         }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          sampleSize: 16,
-          volume: 1.0
-        } 
-      });
-
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Try different MIME types
+      const mimeTypes = [
+        'audio/webm',
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/wav'
+      ];
+      
+      let selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'audio/webm';
+      
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus',
-        audioBitsPerSecond: 16000
+        mimeType: selectedMimeType
       });
       
       mediaRecorder.current.ondataavailable = (event) => {
@@ -105,8 +131,16 @@ function App() {
 
   const uploadChunk = async (chunk) => {
     try {
+      // Create a unique filename with timestamp
+      const timestamp = new Date().getTime();
+      const extension = chunk.type.includes('webm') ? 'webm' : 
+                       chunk.type.includes('ogg') ? 'ogg' : 
+                       chunk.type.includes('wav') ? 'wav' : 'audio';
+      
+      const filename = `audio-chunk-${timestamp}.${extension}`;
+      
       const formData = new FormData();
-      formData.append('audio', chunk, 'audio-chunk.webm');
+      formData.append('audio', chunk, filename);
 
       const response = await fetch('http://localhost:55285/transcribe', {
         method: 'POST',
@@ -114,20 +148,31 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       const result = await response.json();
       
       if (result.text && result.text.trim()) {
+        // Update transcriptions with new entry
         setTranscriptions(prev => [{
           ...result,
-          timestamp: new Date(result.timestamp).toISOString()
+          timestamp: new Date(result.timestamp).toISOString(),
+          filename: filename // Store filename for reference
         }, ...prev]);
+
+        // Clear error if successful
+        setError(null);
+      } else {
+        console.warn('Empty transcription received');
       }
     } catch (error) {
       console.error('Error uploading chunk:', error);
       setError(`Error processing audio: ${error.message}`);
+      
+      // Don't throw, just log and show error to user
+      return null;
     }
   };
 

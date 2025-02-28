@@ -44,7 +44,7 @@ class TranscriptionRequest(BaseModel):
     language: str = "hi"
     task: str = "transcribe"
 
-async def transcribe_with_sarvam(audio_data: bytes) -> str:
+async def transcribe_with_sarvam(audio_data: bytes, filename: str) -> str:
     try:
         # Convert audio to base64
         audio_base64 = base64.b64encode(audio_data).decode('utf-8')
@@ -57,18 +57,33 @@ async def transcribe_with_sarvam(audio_data: bytes) -> str:
         data = {
             "audio_base64": audio_base64,
             "language": "hi",
-            "task": "transcribe"
+            "task": "transcribe",
+            "format": "wav" if filename.endswith('.wav') else "webm"
         }
+        
+        logger.info(f"Sending transcription request for {filename}")
         
         async with aiohttp.ClientSession() as session:
             async with session.post(SARVAM_API_URL, headers=headers, json=data) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Sarvam API error: {error_text}")
-                    return "Error in transcription"
+                response_text = await response.text()
                 
-                result = await response.json()
-                return result.get("text", "No transcription available")
+                if response.status != 200:
+                    logger.error(f"Sarvam API error: {response_text}")
+                    return f"Error in transcription: {response_text}"
+                
+                try:
+                    result = json.loads(response_text)
+                    transcribed_text = result.get("text", "").strip()
+                    
+                    if not transcribed_text:
+                        logger.warning(f"Empty transcription received for {filename}")
+                        return "No speech detected"
+                        
+                    return transcribed_text
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse Sarvam API response: {e}")
+                    return "Error parsing transcription result"
     except Exception as e:
         logger.error(f"Error in Sarvam transcription: {str(e)}")
         return f"Error in transcription: {str(e)}"
@@ -90,24 +105,38 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         content = await audio.read()
         
         # Get transcription from Sarvam AI
-        transcribed_text = await transcribe_with_sarvam(content)
+        transcribed_text = await transcribe_with_sarvam(content, audio.filename)
+        
+        # Calculate duration from content length (rough estimate)
+        # Assuming 32kbps audio rate
+        duration = len(content) / (32 * 1024 / 8)  # in seconds
         
         # Create result
         result = {
             "text": transcribed_text,
             "timestamp": datetime.now().isoformat(),
-            "duration": 8.0,  # Assuming 8-minute chunks
-            "source": "microphone"
+            "duration": round(duration, 2),
+            "source": "microphone",
+            "filename": audio.filename
         }
         
-        # Store in memory
-        transcriptions_store.append(result)
+        # Only store non-error transcriptions
+        if not transcribed_text.startswith("Error"):
+            transcriptions_store.append(result)
         
         return result
         
     except Exception as e:
-        logger.error(f"Error processing audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_msg = str(e)
+        logger.error(f"Error processing audio: {error_msg}")
+        
+        # Return a more user-friendly error
+        if "413" in error_msg:
+            error_msg = "Audio file too large. Please use shorter recordings."
+        elif "415" in error_msg:
+            error_msg = "Unsupported audio format. Please use WAV or WebM format."
+            
+        raise HTTPException(status_code=500, detail=error_msg)
 
 @app.get("/transcriptions")
 async def get_transcriptions():
