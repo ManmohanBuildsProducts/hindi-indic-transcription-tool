@@ -51,8 +51,19 @@ function App() {
         }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder.current = new MediaRecorder(stream);
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          sampleSize: 16,
+          volume: 1.0
+        } 
+      });
+
+      mediaRecorder.current = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 16000
+      });
       
       mediaRecorder.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -65,14 +76,14 @@ function App() {
         stopRecording();
       };
 
-      mediaRecorder.current.start();
+      mediaRecorder.current.start(1000); // Capture every second for smoother experience
       setIsRecording(true);
 
       // Create 8-minute chunks
       chunkInterval.current = setInterval(() => {
         if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
           mediaRecorder.current.stop();
-          mediaRecorder.current.start();
+          mediaRecorder.current.start(1000);
         }
       }, 8 * 60 * 1000); // 8 minutes in milliseconds
 
@@ -93,25 +104,45 @@ function App() {
   };
 
   const uploadChunk = async (chunk) => {
-    const formData = new FormData();
-    formData.append('audio', chunk, 'audio-chunk.webm');
-
     try {
+      const formData = new FormData();
+      formData.append('audio', chunk, 'audio-chunk.webm');
+
       const response = await fetch('http://localhost:55285/transcribe', {
         method: 'POST',
         body: formData,
       });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const result = await response.json();
-      setTranscriptions(prev => [result, ...prev]);
+      
+      if (result.text && result.text.trim()) {
+        setTranscriptions(prev => [{
+          ...result,
+          timestamp: new Date(result.timestamp).toISOString()
+        }, ...prev]);
+      }
     } catch (error) {
       console.error('Error uploading chunk:', error);
+      setError(`Error processing audio: ${error.message}`);
     }
   };
 
+  // Process audio chunks
   useEffect(() => {
-    if (audioChunks.length > 0) {
-      uploadChunk(audioChunks[audioChunks.length - 1]);
-    }
+    const processChunk = async () => {
+      if (audioChunks.length > 0) {
+        const lastChunk = audioChunks[audioChunks.length - 1];
+        if (lastChunk.size > 0) {
+          await uploadChunk(lastChunk);
+        }
+      }
+    };
+
+    processChunk();
   }, [audioChunks]);
 
   return (

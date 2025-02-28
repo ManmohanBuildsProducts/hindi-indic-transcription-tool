@@ -86,26 +86,22 @@ async def root():
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
     try:
-        # Save the audio chunk temporarily
-        chunk_path = f"/tmp/{audio.filename}"
-        with open(chunk_path, "wb") as buffer:
-            content = await audio.read()
-            buffer.write(content)
+        # Read audio content
+        content = await audio.read()
         
-        # TODO: Integrate with Sarvam AI API here
-        # For now, return mock response
+        # Get transcription from Sarvam AI
+        transcribed_text = await transcribe_with_sarvam(content)
+        
+        # Create result
         result = {
-            "text": "Sample Hindi transcription",
+            "text": transcribed_text,
             "timestamp": datetime.now().isoformat(),
-            "duration": 8.0,
+            "duration": 8.0,  # Assuming 8-minute chunks
             "source": "microphone"
         }
         
         # Store in memory
         transcriptions_store.append(result)
-        
-        # Cleanup
-        os.remove(chunk_path)
         
         return result
         
