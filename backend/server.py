@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
@@ -6,6 +6,11 @@ import os
 import logging
 from pathlib import Path
 import json
+import requests
+import base64
+from typing import List, Optional
+import asyncio
+import aiohttp
 from typing import List
 
 # Initialize FastAPI app
