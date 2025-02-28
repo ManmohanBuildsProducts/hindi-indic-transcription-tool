@@ -68,27 +68,42 @@ function App() {
     try {
       setError(null);
       
+      // Check device status
       if (deviceStatus !== 'available') {
-        await checkAudioDevice();
-        if (deviceStatus !== 'available') {
+        const deviceAvailable = await checkAudioDevice();
+        if (!deviceAvailable) {
           throw new Error('Audio device not available');
         }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Get audio stream with specific constraints
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: { ideal: 16000 },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
       
-      // Try different MIME types
+      // Find supported MIME type
       const mimeTypes = [
         'audio/webm',
         'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
         'audio/wav'
       ];
       
-      let selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || 'audio/webm';
+      const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
       
+      if (!selectedMimeType) {
+        throw new Error('No supported audio format found. Please use a modern browser.');
+      }
+      
+      // Create MediaRecorder with optimal settings
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: selectedMimeType
+        mimeType: selectedMimeType,
+        audioBitsPerSecond: 32000 // 32kbps for good quality speech
       });
       
       mediaRecorder.current.ondataavailable = (event) => {
@@ -133,11 +148,13 @@ function App() {
     try {
       // Create a unique filename with timestamp
       const timestamp = new Date().getTime();
-      const extension = chunk.type.includes('webm') ? 'webm' : 
-                       chunk.type.includes('ogg') ? 'ogg' : 
-                       chunk.type.includes('wav') ? 'wav' : 'audio';
-      
+      const extension = chunk.type.includes('webm') ? 'webm' : 'wav';
       const filename = `audio-chunk-${timestamp}.${extension}`;
+      
+      // Check file size before uploading
+      if (chunk.size > 10 * 1024 * 1024) { // 10MB limit
+        throw new Error('Audio chunk too large. Maximum size is 10MB.');
+      }
       
       const formData = new FormData();
       formData.append('audio', chunk, filename);
@@ -147,31 +164,48 @@ function App() {
         body: formData,
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        errorData = { detail: 'Failed to parse server response' };
       }
 
-      const result = await response.json();
-      
-      if (result.text && result.text.trim()) {
+      if (!response.ok) {
+        throw new Error(errorData.detail || `Server error: ${response.status}`);
+      }
+
+      // Handle successful response
+      if (errorData.text && errorData.text.trim()) {
+        if (errorData.text.startsWith('Error') || errorData.text.startsWith('No speech')) {
+          console.warn('Transcription issue:', errorData.text);
+          return;
+        }
+
         // Update transcriptions with new entry
         setTranscriptions(prev => [{
-          ...result,
-          timestamp: new Date(result.timestamp).toISOString(),
-          filename: filename // Store filename for reference
+          ...errorData,
+          timestamp: new Date(errorData.timestamp).toISOString(),
+          filename: filename
         }, ...prev]);
 
         // Clear error if successful
         setError(null);
-      } else {
-        console.warn('Empty transcription received');
       }
     } catch (error) {
       console.error('Error uploading chunk:', error);
-      setError(`Error processing audio: ${error.message}`);
       
-      // Don't throw, just log and show error to user
+      // Handle specific error cases
+      let errorMessage = error.message;
+      if (errorMessage.includes('too large')) {
+        errorMessage = 'Recording chunk too large. Please use shorter recordings.';
+      } else if (errorMessage.includes('format')) {
+        errorMessage = 'Unsupported audio format. Please use a different browser.';
+      } else if (errorMessage.includes('API')) {
+        errorMessage = 'Transcription service error. Please try again later.';
+      }
+      
+      setError(errorMessage);
       return null;
     }
   };

@@ -16,6 +16,7 @@ from typing import List
 # Constants
 SARVAM_API_KEY = "ec7650e8-3560-48c7-8c69-649f1c659680"
 SARVAM_API_URL = "https://api.sarvam.ai/v1/transcribe"
+MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB limit
 
 # Initialize FastAPI app
 app = FastAPI(title="Hindi Audio Transcription API")
@@ -101,8 +102,22 @@ async def root():
 @app.post("/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):
     try:
-        # Read audio content
+        # Validate file format
+        if not audio.content_type in ["audio/webm", "audio/wav", "audio/wave"]:
+            raise HTTPException(
+                status_code=415,
+                detail="Unsupported audio format. Please use WAV or WebM format."
+            )
+
+        # Read content for size validation
         content = await audio.read()
+        
+        # Validate file size
+        if len(content) > MAX_AUDIO_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Audio file too large. Please use shorter recordings (max 10MB)."
+            )
         
         # Get transcription from Sarvam AI
         transcribed_text = await transcribe_with_sarvam(content, audio.filename)
@@ -120,21 +135,27 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             "filename": audio.filename
         }
         
-        # Only store non-error transcriptions
-        if not transcribed_text.startswith("Error"):
+        # Only store successful transcriptions
+        if not transcribed_text.startswith(("Error", "No speech")):
             transcriptions_store.append(result)
+            logger.info(f"Successfully transcribed {audio.filename}")
+        else:
+            logger.warning(f"Transcription failed for {audio.filename}: {transcribed_text}")
         
         return result
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error processing audio: {error_msg}")
         
-        # Return a more user-friendly error
-        if "413" in error_msg:
-            error_msg = "Audio file too large. Please use shorter recordings."
-        elif "415" in error_msg:
-            error_msg = "Unsupported audio format. Please use WAV or WebM format."
+        if "not authorized" in error_msg.lower():
+            error_msg = "API authentication failed. Please check API key."
+        elif "timeout" in error_msg.lower():
+            error_msg = "Transcription service timeout. Please try again."
+        else:
+            error_msg = "Failed to process audio. Please try again."
             
         raise HTTPException(status_code=500, detail=error_msg)
 
