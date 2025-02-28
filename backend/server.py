@@ -1,12 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 from datetime import datetime
 import os
 import logging
 from pathlib import Path
 import json
+from typing import List
 
 # Initialize FastAPI app
 app = FastAPI(title="Hindi Audio Transcription API")
@@ -27,10 +27,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# MongoDB setup
-mongo_url = os.environ.get('MONGO_URL', "mongodb://localhost:55771")
-client = AsyncIOMotorClient(mongo_url)
-db = client.transcription_db
+# In-memory storage
+transcriptions_store: List[dict] = []
 
 class TranscriptionResult(BaseModel):
     text: str
@@ -53,15 +51,15 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         
         # TODO: Integrate with Sarvam AI API here
         # For now, return mock response
-        result = TranscriptionResult(
-            text="Sample transcription",
-            timestamp=datetime.now(),
-            duration=8.0,
-            source="microphone"
-        )
+        result = {
+            "text": "Sample Hindi transcription",
+            "timestamp": datetime.now().isoformat(),
+            "duration": 8.0,
+            "source": "microphone"
+        }
         
-        # Store in MongoDB
-        await db.transcriptions.insert_one(result.dict())
+        # Store in memory
+        transcriptions_store.append(result)
         
         # Cleanup
         os.remove(chunk_path)
@@ -75,13 +73,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 @app.get("/transcriptions")
 async def get_transcriptions():
     try:
-        cursor = db.transcriptions.find().sort("timestamp", -1)
-        transcriptions = await cursor.to_list(length=100)
-        return transcriptions
+        return sorted(transcriptions_store, key=lambda x: x["timestamp"], reverse=True)
     except Exception as e:
         logger.error(f"Error fetching transcriptions: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
