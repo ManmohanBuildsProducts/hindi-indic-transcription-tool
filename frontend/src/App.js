@@ -177,13 +177,33 @@ function App() {
 
   const uploadChunk = async (chunk) => {
     try {
-      // Create a unique filename with timestamp
+      // Handle test mode with mock responses
+      if (isTestMode) {
+        const mockResponses = [
+          "नमस्ते, मैं हिंदी में बात कर रहा हूं।",
+          "आज का मौसम बहुत अच्छा है।",
+          "यह एक परीक्षण मोड प्रतिलिपि है।",
+          "हम एक नई तकनीक का परीक्षण कर रहे हैं।"
+        ];
+        
+        const mockResponse = {
+          text: mockResponses[Math.floor(Math.random() * mockResponses.length)],
+          timestamp: new Date().toISOString(),
+          duration: 8.0,
+          source: "test_mode",
+          filename: `test-chunk-${Date.now()}.webm`
+        };
+
+        setTranscriptions(prev => [mockResponse, ...prev]);
+        return;
+      }
+
+      // Normal mode processing
       const timestamp = new Date().getTime();
       const extension = chunk.type.includes('webm') ? 'webm' : 'wav';
       const filename = `audio-chunk-${timestamp}.${extension}`;
       
-      // Check file size before uploading
-      if (chunk.size > 10 * 1024 * 1024) { // 10MB limit
+      if (chunk.size > 10 * 1024 * 1024) {
         throw new Error('Audio chunk too large. Maximum size is 10MB.');
       }
       
@@ -195,44 +215,40 @@ function App() {
         body: formData,
       });
 
-      let errorData;
+      let responseData;
       try {
-        errorData = await response.json();
+        responseData = await response.json();
       } catch (e) {
-        errorData = { detail: 'Failed to parse server response' };
+        throw new Error('Failed to parse server response');
       }
 
       if (!response.ok) {
-        throw new Error(errorData.detail || `Server error: ${response.status}`);
+        throw new Error(responseData.detail || `Server error: ${response.status}`);
       }
 
-      // Handle successful response
-      if (errorData.text && errorData.text.trim()) {
-        if (errorData.text.startsWith('Error') || errorData.text.startsWith('No speech')) {
-          console.warn('Transcription issue:', errorData.text);
+      if (responseData.text && responseData.text.trim()) {
+        if (responseData.text.startsWith('Error') || responseData.text.startsWith('No speech')) {
+          console.warn('Transcription issue:', responseData.text);
           return;
         }
 
-        // Update transcriptions with new entry
         setTranscriptions(prev => [{
-          ...errorData,
-          timestamp: new Date(errorData.timestamp).toISOString(),
+          ...responseData,
+          timestamp: new Date(responseData.timestamp).toISOString(),
           filename: filename
         }, ...prev]);
 
-        // Clear error if successful
         setError(null);
       }
     } catch (error) {
       console.error('Error uploading chunk:', error);
       
-      // Handle specific error cases
       let errorMessage = error.message;
       if (errorMessage.includes('too large')) {
         errorMessage = 'Recording chunk too large. Please use shorter recordings.';
       } else if (errorMessage.includes('format')) {
         errorMessage = 'Unsupported audio format. Please use a different browser.';
-      } else if (errorMessage.includes('API')) {
+      } else if (errorMessage.includes('API') || errorMessage.includes('server')) {
         errorMessage = 'Transcription service error. Please try again later.';
       }
       
