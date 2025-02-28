@@ -7,8 +7,16 @@ function App() {
   const [transcriptions, setTranscriptions] = useState([]);
   const [error, setError] = useState(null);
   const [deviceStatus, setDeviceStatus] = useState('unchecked'); // 'unchecked' | 'available' | 'unavailable'
+  const [isTestMode, setIsTestMode] = useState(false);
   const mediaRecorder = useRef(null);
   const chunkInterval = useRef(null);
+  
+  // Test mode toggle
+  const toggleTestMode = () => {
+    setIsTestMode(!isTestMode);
+    setDeviceStatus(isTestMode ? 'unchecked' : 'available');
+    setError(null);
+  };
 
   useEffect(() => {
     // Load existing transcriptions
@@ -68,7 +76,24 @@ function App() {
     try {
       setError(null);
       
-      // Check device status
+      if (isTestMode) {
+        // Simulate recording in test mode
+        setIsRecording(true);
+        
+        // Simulate chunks every 8 minutes
+        chunkInterval.current = setInterval(() => {
+          const testAudioBlob = new Blob(['Test audio data'], { type: 'audio/webm' });
+          setAudioChunks(chunks => [...chunks, testAudioBlob]);
+        }, 8 * 60 * 1000); // 8 minutes
+        
+        // Simulate first chunk immediately
+        const initialTestBlob = new Blob(['Initial test audio data'], { type: 'audio/webm' });
+        setAudioChunks(chunks => [...chunks, initialTestBlob]);
+        
+        return;
+      }
+      
+      // Normal recording mode
       if (deviceStatus !== 'available') {
         const deviceAvailable = await checkAudioDevice();
         if (!deviceAvailable) {
@@ -136,6 +161,12 @@ function App() {
   };
 
   const stopRecording = () => {
+    if (isTestMode) {
+      clearInterval(chunkInterval.current);
+      setIsRecording(false);
+      return;
+    }
+    
     if (mediaRecorder.current) {
       mediaRecorder.current.stop();
       clearInterval(chunkInterval.current);
@@ -230,25 +261,42 @@ function App() {
         <header className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-800">Hindi Audio Transcription Tool</h1>
           <p className="text-gray-600 mt-2">Record and transcribe Hindi audio in real-time</p>
+          
+          {/* Test Mode Toggle */}
+          <div className="mt-4">
+            <button
+              onClick={toggleTestMode}
+              className="text-sm px-4 py-2 rounded bg-gray-200 hover:bg-gray-300 transition-colors"
+            >
+              {isTestMode ? 'Exit Test Mode' : 'Enter Test Mode'}
+            </button>
+            {isTestMode && (
+              <p className="text-xs text-gray-500 mt-2">
+                Test mode enabled. Recording simulation active.
+              </p>
+            )}
+          </div>
         </header>
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
           {/* Device Status Indicator */}
           <div className="flex items-center justify-center mb-4">
             <div className={`w-3 h-3 rounded-full mr-2 ${
+              isTestMode ? 'bg-yellow-500' :
               deviceStatus === 'available' ? 'bg-green-500' :
               deviceStatus === 'unavailable' ? 'bg-red-500' :
               'bg-yellow-500'
             }`}></div>
             <span className="text-sm text-gray-600">
-              {deviceStatus === 'available' ? 'Microphone Ready' :
+              {isTestMode ? 'Test Mode Active' :
+               deviceStatus === 'available' ? 'Microphone Ready' :
                deviceStatus === 'unavailable' ? 'No Microphone' :
                'Checking Device...'}
             </span>
           </div>
 
           {/* Error Message */}
-          {error && (
+          {error && !isTestMode && (
             <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4">
               <span className="block sm:inline">{error}</span>
             </div>
@@ -257,9 +305,9 @@ function App() {
           <div className="flex justify-center mb-6">
             <button
               onClick={isRecording ? stopRecording : startRecording}
-              disabled={deviceStatus !== 'available'}
+              disabled={!isTestMode && deviceStatus !== 'available'}
               className={`px-6 py-3 rounded-full font-semibold text-white ${
-                deviceStatus !== 'available' 
+                !isTestMode && deviceStatus !== 'available'
                   ? 'bg-gray-400 cursor-not-allowed' 
                 : isRecording 
                   ? 'bg-red-500 hover:bg-red-600' 
@@ -273,7 +321,7 @@ function App() {
           {isRecording && (
             <div className="text-center text-sm text-gray-600">
               <div className="recording-indicator inline-block w-2 h-2 bg-red-500 rounded-full mr-2"></div>
-              Recording in progress... Audio will be processed in 8-minute chunks
+              {isTestMode ? 'Test recording in progress...' : 'Recording in progress... Audio will be processed in 8-minute chunks'}
             </div>
           )}
         </div>
