@@ -8,8 +8,8 @@ function App() {
   const [error, setError] = useState(null);
   const [deviceStatus, setDeviceStatus] = useState('unchecked');
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [audioSource, setAudioSource] = useState('microphone'); // 'microphone' or 'system'
+  const [isProcessing, setIsProcessing] = useState(false);
   const mediaRecorder = useRef(null);
   const audioChunks = useRef([]);
   const durationTimer = useRef(null);
