@@ -179,17 +179,17 @@ async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: 
         return None
 
 async def process_recording(recording_id: str, audio_chunks: List[AudioSegment]):
-    """Process all chunks of a recording with improved status tracking"""
+    """Process all chunks of a recording with progress tracking"""
     try:
         chunks[recording_id] = []
         tasks = []
         total_chunks = len(audio_chunks)
         
-        # Update initial status
+        # Reset chunk counters
         recordings[recording_id].update({
-            "total_chunks": total_chunks,
-            "processed_chunks": 0,
-            "failed_chunks": 0
+            "chunks_processed": 0,
+            "chunks_failed": 0,
+            "progress": 0
         })
         
         async def process_chunk(chunk: AudioSegment, index: int) -> dict:
@@ -197,18 +197,28 @@ async def process_recording(recording_id: str, audio_chunks: List[AudioSegment])
                 result = await transcribe_chunk(chunk, index, recording_id)
                 
                 # Update progress
-                recordings[recording_id]["processed_chunks"] += 1
+                recordings[recording_id]["chunks_processed"] += 1
+                recordings[recording_id]["progress"] = int((recordings[recording_id]["chunks_processed"] / total_chunks) * 100)
+                
                 if result is None:
-                    recordings[recording_id]["failed_chunks"] += 1
+                    recordings[recording_id]["chunks_failed"] += 1
+                    return {
+                        "index": index,
+                        "transcript": None,
+                        "error": "Failed to transcribe chunk"
+                    }
                 
                 return {
                     "index": index,
                     "transcript": result,
-                    "error": None if result is not None else "Failed to transcribe chunk"
+                    "error": None
                 }
+                
             except Exception as e:
-                recordings[recording_id]["processed_chunks"] += 1
-                recordings[recording_id]["failed_chunks"] += 1
+                recordings[recording_id]["chunks_processed"] += 1
+                recordings[recording_id]["chunks_failed"] += 1
+                recordings[recording_id]["progress"] = int((recordings[recording_id]["chunks_processed"] / total_chunks) * 100)
+                
                 return {
                     "index": index,
                     "transcript": None,
@@ -225,8 +235,11 @@ async def process_recording(recording_id: str, audio_chunks: List[AudioSegment])
             chunk_results = await asyncio.gather(*tasks, return_exceptions=False)
         except Exception as e:
             logger.error(f"Error gathering results: {e}")
-            recordings[recording_id]["status"] = RecordingStatus.FAILED
-            recordings[recording_id]["error"] = f"Processing timeout: {str(e)}"
+            recordings[recording_id].update({
+                "status": RecordingStatus.FAILED,
+                "error": f"Processing timeout: {str(e)}",
+                "progress": int((recordings[recording_id]["chunks_processed"] / total_chunks) * 100)
+            })
             return
         
         # Process results
@@ -242,26 +255,32 @@ async def process_recording(recording_id: str, audio_chunks: List[AudioSegment])
         
         # Update final status
         if len(successful_transcripts) == total_chunks:
-            recordings[recording_id]["status"] = RecordingStatus.COMPLETED
-            recordings[recording_id]["transcript"] = " ".join(successful_transcripts)
+            recordings[recording_id].update({
+                "status": RecordingStatus.COMPLETED,
+                "transcript": " ".join(successful_transcripts),
+                "progress": 100
+            })
         elif len(successful_transcripts) > 0:
-            recordings[recording_id]["status"] = RecordingStatus.COMPLETED
-            recordings[recording_id]["transcript"] = " ".join(successful_transcripts)
-            recordings[recording_id]["warning"] = f"Some chunks failed: {failed_chunks}"
+            recordings[recording_id].update({
+                "status": RecordingStatus.COMPLETED,
+                "transcript": " ".join(successful_transcripts),
+                "warning": f"Some chunks failed: {failed_chunks}",
+                "progress": 100
+            })
         else:
-            recordings[recording_id]["status"] = RecordingStatus.FAILED
-            recordings[recording_id]["error"] = "All chunks failed to process"
+            recordings[recording_id].update({
+                "status": RecordingStatus.FAILED,
+                "error": "All chunks failed to process",
+                "progress": 100
+            })
             
     except Exception as e:
         logger.error(f"Error processing recording {recording_id}: {e}")
-        recordings[recording_id]["status"] = RecordingStatus.FAILED
-        recordings[recording_id]["error"] = str(e)
-    finally:
-        # Ensure we have final counts
-        if "processed_chunks" not in recordings[recording_id]:
-            recordings[recording_id]["processed_chunks"] = 0
-        if "failed_chunks" not in recordings[recording_id]:
-            recordings[recording_id]["failed_chunks"] = 0
+        recordings[recording_id].update({
+            "status": RecordingStatus.FAILED,
+            "error": str(e),
+            "progress": recordings[recording_id].get("progress", 0)
+        })
 
 @app.get("/")
 async def root():
