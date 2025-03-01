@@ -8,8 +8,24 @@ function App() {
   const [error, setError] = useState(null);
   const [deviceStatus, setDeviceStatus] = useState('unchecked');
   const [isTestMode, setIsTestMode] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
   const mediaRecorder = useRef(null);
   const audioChunks = useRef([]);
+  const recordingTimer = useRef(null);
+
+  // Update recording duration
+  useEffect(() => {
+    if (isRecording) {
+      recordingTimer.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(recordingTimer.current);
+      setRecordingDuration(0);
+    }
+    return () => clearInterval(recordingTimer.current);
+  }, [isRecording]);
 
   useEffect(() => {
     // Load existing recordings
@@ -31,22 +47,65 @@ function App() {
 
   const checkAudioDevice = async () => {
     try {
-      // First request permission
-      await navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(stream => {
-          stream.getTracks().forEach(track => track.stop());
-          setDeviceStatus('available');
-          setError(null);
-        })
-        .catch(err => {
-          console.error('Permission error:', err);
-          setDeviceStatus('unavailable');
-          setError('Microphone permission denied. Please allow microphone access.');
-        });
+      // Check if MediaRecorder is supported
+      if (!window.MediaRecorder) {
+        setDeviceStatus('unavailable');
+        setError('Your browser does not support audio recording. Please use a modern browser.');
+        return false;
+      }
+
+      // Check if getUserMedia is supported
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setDeviceStatus('unavailable');
+        setError('Audio recording is not supported in your browser.');
+        return false;
+      }
+
+      // List available devices first
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasAudioDevice = devices.some(device => device.kind === 'audioinput');
+
+      if (!hasAudioDevice) {
+        setDeviceStatus('unavailable');
+        setError('No microphone found. Please connect a microphone and try again.');
+        return false;
+      }
+
+      // Request permission and test device
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      // Test if we can actually record
+      const testRecorder = new MediaRecorder(stream);
+      
+      // Stop all tracks
+      stream.getTracks().forEach(track => track.stop());
+      
+      setDeviceStatus('available');
+      setError(null);
+      return true;
+
     } catch (err) {
       console.error('Device check error:', err);
+      
+      // Handle specific error cases
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Microphone access denied. Please allow microphone access in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone found. Please check your microphone connection.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setError('Could not access your microphone. Please check if another application is using it.');
+      } else {
+        setError('Could not access audio device. Please check your microphone and browser settings.');
+      }
+      
       setDeviceStatus('unavailable');
-      setError('Could not access audio devices. Please check permissions.');
+      return false;
     }
   };
 
@@ -104,8 +163,10 @@ function App() {
 
   const stopRecording = async () => {
     try {
+      setIsRecording(false);
+      setIsUploading(true);
+      
       if (isTestMode) {
-        setIsRecording(false);
         // Create test recording with proper FormData
         const formData = new FormData();
         const testBlob = new Blob(['test audio data'], { type: 'audio/webm' });
@@ -122,13 +183,22 @@ function App() {
         
         const result = await response.json();
         setRecordingId(result.recording_id);
-        await fetchRecordings();  // Refresh recordings list
+        
+        // Wait a bit to simulate processing
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        await fetchRecordings();
+        setIsUploading(false);
         return;
       }
 
       if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
+        // Stop recording
         mediaRecorder.current.stop();
         mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
+        
+        // Wait for the last chunk
+        await new Promise(resolve => setTimeout(resolve, 100));
         
         // Create a single blob from all chunks
         const audioBlob = new Blob(audioChunks.current, { 
@@ -145,22 +215,40 @@ function App() {
         });
         
         if (!response.ok) {
-          throw new Error('Failed to upload recording');
+          const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
+          throw new Error(errorData.detail || 'Failed to upload recording');
         }
         
         const result = await response.json();
         setRecordingId(result.recording_id);
         
         // Clear recording state
-        setIsRecording(false);
         audioChunks.current = [];
         
+        // Poll for completion
+        let attempts = 0;
+        const maxAttempts = 30; // 30 seconds timeout
+        
+        while (attempts < maxAttempts) {
+          const statusResponse = await fetch(`http://localhost:55285/recordings/${result.recording_id}`);
+          const statusData = await statusResponse.json();
+          
+          if (statusData.status === 'completed' || statusData.status === 'failed') {
+            break;
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          attempts++;
+        }
+        
         // Refresh recordings list
-        fetchRecordings();
+        await fetchRecordings();
       }
     } catch (error) {
       console.error('Error stopping recording:', error);
       setError(error.message || 'Error stopping recording');
+    } finally {
+      setIsUploading(false);
       setIsRecording(false);
     }
   };
@@ -237,9 +325,28 @@ function App() {
 
           {/* Recording Status */}
           {isRecording && (
-            <div className="text-center text-sm text-gray-600">
-              <div className="recording-indicator inline-block w-2 h-2 bg-red-500 rounded-full mr-2"></div>
-              {isTestMode ? 'Test recording in progress...' : 'Recording in progress...'}
+            <div className="text-center space-y-2">
+              <div className="flex items-center justify-center text-sm text-gray-600">
+                <div className="recording-indicator inline-block w-2 h-2 bg-red-500 rounded-full mr-2"></div>
+                <span>
+                  {isTestMode ? 'Test recording in progress...' : 'Recording in progress...'}
+                </span>
+              </div>
+              <div className="text-sm font-mono">
+                {Math.floor(recordingDuration / 60).toString().padStart(2, '0')}:
+                {(recordingDuration % 60).toString().padStart(2, '0')}
+              </div>
+            </div>
+          )}
+          {isUploading && (
+            <div className="text-center mt-4">
+              <div className="inline-flex items-center px-4 py-2 font-semibold leading-6 text-sm shadow rounded-md text-white bg-blue-500 transition ease-in-out duration-150 cursor-not-allowed">
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Processing Recording...
+              </div>
             </div>
           )}
         </div>
@@ -267,28 +374,38 @@ function App() {
                     {recording.status}
                   </span>
                 </div>
-                {recording.transcript && (
-                  <div className="mt-2">
-                    <p className="text-gray-800 whitespace-pre-wrap font-hindi">
-                      {recording.transcript}
-                    </p>
-                  </div>
-                )}
-                {recording.status === 'processing' && (
-                  <div className="mt-2">
-                    <p className="text-yellow-600">
-                      <span className="inline-block animate-spin mr-2">⚙️</span>
-                      Processing transcription...
-                    </p>
-                  </div>
-                )}
-                {recording.status === 'failed' && recording.error && (
-                  <div className="mt-2">
-                    <p className="text-red-600">
-                      Error: {recording.error}
-                    </p>
-                  </div>
-                )}
+                <div className="mt-4 transcript-text">
+                  {recording.status === 'completed' && recording.transcript && (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-500 mb-2">Transcription:</h3>
+                      <p className="text-gray-800 whitespace-pre-wrap font-hindi text-lg">
+                        {recording.transcript}
+                      </p>
+                    </div>
+                  )}
+                  {recording.status === 'processing' && (
+                    <div className="flex items-center justify-center py-4">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mr-3"></div>
+                      <p className="text-blue-600">Processing transcription...</p>
+                    </div>
+                  )}
+                  {recording.status === 'failed' && (
+                    <div className="bg-red-50 border-l-4 border-red-500 p-4">
+                      <div className="flex items-center">
+                        <div className="flex-shrink-0">
+                          <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                        <div className="ml-3">
+                          <p className="text-sm text-red-700">
+                            {recording.error || 'Failed to process recording'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
             {recordings.length === 0 && (
