@@ -106,13 +106,23 @@ function App() {
     try {
       if (isTestMode) {
         setIsRecording(false);
-        // Simulate a test recording
+        // Create test recording with proper FormData
+        const formData = new FormData();
+        const testBlob = new Blob(['test audio data'], { type: 'audio/webm' });
+        formData.append('audio', testBlob, 'test_recording');
+        
         const response = await fetch('http://localhost:55285/recordings', {
           method: 'POST',
-          body: new Blob(['test audio data'], { type: 'audio/webm' })
+          body: formData
         });
+        
+        if (!response.ok) {
+          throw new Error('Failed to process test recording');
+        }
+        
         const result = await response.json();
         setRecordingId(result.recording_id);
+        await fetchRecordings();  // Refresh recordings list
         return;
       }
 
@@ -257,10 +267,25 @@ function App() {
                     {recording.status}
                   </span>
                 </div>
-                {recording.has_transcript && (
+                {recording.transcript && (
                   <div className="mt-2">
-                    <p className="text-gray-800 whitespace-pre-wrap">
+                    <p className="text-gray-800 whitespace-pre-wrap font-hindi">
                       {recording.transcript}
+                    </p>
+                  </div>
+                )}
+                {recording.status === 'processing' && (
+                  <div className="mt-2">
+                    <p className="text-yellow-600">
+                      <span className="inline-block animate-spin mr-2">⚙️</span>
+                      Processing transcription...
+                    </p>
+                  </div>
+                )}
+                {recording.status === 'failed' && recording.error && (
+                  <div className="mt-2">
+                    <p className="text-red-600">
+                      Error: {recording.error}
                     </p>
                   </div>
                 )}

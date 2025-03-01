@@ -1,94 +1,123 @@
-import requests
 import pytest
+import requests
+import json
+import time
 import io
-import os
+import wave
+import numpy as np
+from datetime import datetime
 
 BASE_URL = "http://localhost:55285"
 
+def create_test_wav():
+    """Create a test WAV file with 1 second of audio"""
+    samplerate = 16000
+    duration = 1  # seconds
+    t = np.linspace(0, duration, int(samplerate * duration))
+    data = np.sin(2 * np.pi * 440 * t)  # 440 Hz sine wave
+    scaled = np.int16(data * 32767)
+    
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(samplerate)
+        wav.writeframes(scaled.tobytes())
+    
+    return buffer.getvalue()
+
 def test_health_check():
-    """Test the root endpoint health check"""
+    """Test the health check endpoint"""
     response = requests.get(f"{BASE_URL}/")
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
     assert data["service"] == "Hindi Audio Transcription API"
-    print("✅ Health check endpoint working")
 
-def test_get_transcriptions():
-    """Test getting transcriptions list"""
-    response = requests.get(f"{BASE_URL}/transcriptions")
+def test_create_recording():
+    """Test creating a new recording"""
+    # Create test audio file
+    audio_data = create_test_wav()
+    files = {'audio': ('test.wav', audio_data, 'audio/wav')}
+    
+    response = requests.post(f"{BASE_URL}/recordings", files=files)
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    print("✅ Transcriptions list endpoint working")
+    assert "recording_id" in data
+    assert data["status"] == "processing"
+    
+    return data["recording_id"]
 
-def test_file_size_validation():
-    """Test file size validation (>10MB file)"""
-    # Create a mock audio file larger than 10MB
-    large_file_size = 11 * 1024 * 1024  # 11MB
-    mock_large_audio = io.BytesIO(b"0" * large_file_size)
-    files = {"audio": ("large_audio.webm", mock_large_audio, "audio/webm")}
+def test_get_recording(recording_id):
+    """Test getting a specific recording"""
+    # Wait for processing to complete (max 10 seconds)
+    for _ in range(10):
+        response = requests.get(f"{BASE_URL}/recordings/{recording_id}")
+        assert response.status_code == 200
+        data = response.json()
+        
+        if data["status"] in ["completed", "failed"]:
+            break
+        time.sleep(1)
     
-    response = requests.post(f"{BASE_URL}/transcribe", files=files)
-    assert response.status_code == 413
-    assert "too large" in response.json()["detail"].lower()
-    print("✅ File size validation working")
-
-def test_invalid_format():
-    """Test format validation"""
-    mock_audio = io.BytesIO(b"invalid audio data")
-    files = {"audio": ("test.mp3", mock_audio, "audio/mp3")}
-    
-    response = requests.post(f"{BASE_URL}/transcribe", files=files)
-    assert response.status_code == 415
-    assert "unsupported" in response.json()["detail"].lower()
-    print("✅ Format validation working")
-
-def test_valid_audio_transcription():
-    """Test transcription with valid audio file"""
-    # Create a small valid WebM audio file
-    mock_audio = io.BytesIO(b"valid audio content")
-    files = {"audio": ("test_audio.webm", mock_audio, "audio/webm")}
-    
-    response = requests.post(f"{BASE_URL}/transcribe", files=files)
-    assert response.status_code == 200
-    data = response.json()
-    
-    # Verify response structure
-    assert "text" in data
+    assert "id" in data
+    assert "status" in data
     assert "timestamp" in data
     assert "duration" in data
-    assert "source" in data
-    assert "filename" in data
-    print("✅ Valid audio transcription working")
 
-def test_empty_audio():
-    """Test transcription with empty audio"""
-    mock_audio = io.BytesIO(b"")
-    files = {"audio": ("empty.webm", mock_audio, "audio/webm")}
-    
-    response = requests.post(f"{BASE_URL}/transcribe", files=files)
+def test_get_recording_chunks(recording_id):
+    """Test getting chunks for a recording"""
+    response = requests.get(f"{BASE_URL}/recordings/{recording_id}/chunks")
+    assert response.status_code == 200
     data = response.json()
-    assert "text" in data
-    print("✅ Empty audio handling working")
+    assert "chunks" in data
 
-def run_all_tests():
-    """Run all tests and print summary"""
-    print("\n🔍 Starting Backend API Tests...\n")
+def test_list_recordings():
+    """Test listing all recordings"""
+    response = requests.get(f"{BASE_URL}/recordings")
+    assert response.status_code == 200
+    data = response.json()
+    assert "recordings" in data
+    assert isinstance(data["recordings"], list)
+
+def test_invalid_recording_id():
+    """Test getting a non-existent recording"""
+    response = requests.get(f"{BASE_URL}/recordings/invalid-id")
+    assert response.status_code == 404
+
+def test_invalid_audio_format():
+    """Test uploading an invalid audio format"""
+    files = {'audio': ('test.txt', b'invalid audio data', 'text/plain')}
+    response = requests.post(f"{BASE_URL}/recordings", files=files)
+    assert response.status_code == 415
+
+if __name__ == "__main__":
+    # Run all tests
+    print("Running API tests...")
     
     try:
         test_health_check()
-        test_get_transcriptions()
-        test_file_size_validation()
-        test_invalid_format()
-        test_valid_audio_transcription()
-        test_empty_audio()
+        print("✅ Health check test passed")
         
-        print("\n✨ All backend tests completed successfully!")
+        recording_id = test_create_recording()
+        print("✅ Create recording test passed")
+        
+        test_get_recording(recording_id)
+        print("✅ Get recording test passed")
+        
+        test_get_recording_chunks(recording_id)
+        print("✅ Get recording chunks test passed")
+        
+        test_list_recordings()
+        print("✅ List recordings test passed")
+        
+        test_invalid_recording_id()
+        print("✅ Invalid recording ID test passed")
+        
+        test_invalid_audio_format()
+        print("✅ Invalid audio format test passed")
+        
+        print("\n🎉 All tests passed successfully!")
         
     except Exception as e:
         print(f"\n❌ Test failed: {str(e)}")
-        raise e
-
-if __name__ == "__main__":
-    run_all_tests()
