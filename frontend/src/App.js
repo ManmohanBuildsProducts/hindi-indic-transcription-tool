@@ -456,17 +456,36 @@ function App() {
                 <div className="mt-4">
                   {recording.status === 'completed' && recording.transcript && (
                     <div className="bg-gray-50 rounded-lg p-4">
+                      {recording.warning && (
+                        <div className="mb-4 bg-yellow-50 border-l-4 border-yellow-400 p-4">
+                          <div className="flex">
+                            <div className="flex-shrink-0">
+                              <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                            <div className="ml-3">
+                              <p className="text-sm text-yellow-700">
+                                {recording.warning}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       <h3 className="text-sm font-semibold text-gray-500 mb-2">Transcription:</h3>
                       <div className="bg-white rounded p-4 shadow-sm">
                         <p className="text-gray-800 whitespace-pre-wrap font-hindi text-lg leading-relaxed">
                           {recording.transcript}
                         </p>
                       </div>
-                      <div className="mt-2 flex justify-end">
+                      <div className="mt-2 flex justify-end space-x-4">
                         <button 
                           onClick={() => navigator.clipboard.writeText(recording.transcript)}
-                          className="text-sm text-blue-600 hover:text-blue-800"
+                          className="text-sm text-blue-600 hover:text-blue-800 flex items-center"
                         >
+                          <svg className="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                          </svg>
                           Copy Text
                         </button>
                       </div>
@@ -477,7 +496,25 @@ function App() {
                     <div className="flex flex-col items-center justify-center py-6 bg-blue-50 rounded-lg">
                       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
                       <p className="text-blue-600 mt-2">Processing your recording...</p>
-                      <p className="text-sm text-blue-400">This may take a few moments</p>
+                      {recording.total_chunks && (
+                        <div className="w-full max-w-md mt-4">
+                          <div className="flex justify-between text-sm text-blue-600 mb-1">
+                            <span>Progress: {recording.processed_chunks} / {recording.total_chunks}</span>
+                            <span>{Math.round((recording.processed_chunks / recording.total_chunks) * 100)}%</span>
+                          </div>
+                          <div className="w-full bg-blue-200 rounded-full h-2">
+                            <div 
+                              className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                              style={{ width: `${(recording.processed_chunks / recording.total_chunks) * 100}%` }}
+                            ></div>
+                          </div>
+                          {recording.failed_chunks > 0 && (
+                            <p className="text-yellow-600 text-sm mt-2">
+                              {recording.failed_chunks} chunk(s) failed to process
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                   

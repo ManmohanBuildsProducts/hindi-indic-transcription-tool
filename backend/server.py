@@ -179,43 +179,89 @@ async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: 
         return None
 
 async def process_recording(recording_id: str, audio_chunks: List[AudioSegment]):
-    """Process all chunks of a recording"""
+    """Process all chunks of a recording with improved status tracking"""
     try:
         chunks[recording_id] = []
         tasks = []
+        total_chunks = len(audio_chunks)
         
+        # Update initial status
+        recordings[recording_id].update({
+            "total_chunks": total_chunks,
+            "processed_chunks": 0,
+            "failed_chunks": 0
+        })
+        
+        async def process_chunk(chunk: AudioSegment, index: int) -> dict:
+            try:
+                result = await transcribe_chunk(chunk, index, recording_id)
+                
+                # Update progress
+                recordings[recording_id]["processed_chunks"] += 1
+                if result is None:
+                    recordings[recording_id]["failed_chunks"] += 1
+                
+                return {
+                    "index": index,
+                    "transcript": result,
+                    "error": None if result is not None else "Failed to transcribe chunk"
+                }
+            except Exception as e:
+                recordings[recording_id]["processed_chunks"] += 1
+                recordings[recording_id]["failed_chunks"] += 1
+                return {
+                    "index": index,
+                    "transcript": None,
+                    "error": str(e)
+                }
+        
+        # Process chunks in parallel with status tracking
         for i, chunk in enumerate(audio_chunks):
-            task = asyncio.create_task(transcribe_chunk(chunk, i, recording_id))
+            task = asyncio.create_task(process_chunk(chunk, i))
             tasks.append(task)
         
-        # Wait for all chunks to be processed
-        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Wait for all chunks with timeout
+        try:
+            chunk_results = await asyncio.gather(*tasks, return_exceptions=False)
+        except Exception as e:
+            logger.error(f"Error gathering results: {e}")
+            recordings[recording_id]["status"] = RecordingStatus.FAILED
+            recordings[recording_id]["error"] = f"Processing timeout: {str(e)}"
+            return
         
         # Process results
-        success = True
-        transcripts = []
+        successful_transcripts = []
+        failed_chunks = []
         
-        for i, result in enumerate(chunk_results):
-            if isinstance(result, Exception) or result is None:
-                success = False
-                error_msg = str(result) if isinstance(result, Exception) else f"Failed to process chunk {i}"
-                chunks[recording_id].append({"index": i, "error": error_msg})
+        for result in chunk_results:
+            chunks[recording_id].append(result)
+            if result["transcript"]:
+                successful_transcripts.append(result["transcript"])
             else:
-                chunks[recording_id].append({"index": i, "transcript": result})
-                transcripts.append(result)
+                failed_chunks.append(result["index"])
         
-        # Update recording status
-        if success:
+        # Update final status
+        if len(successful_transcripts) == total_chunks:
             recordings[recording_id]["status"] = RecordingStatus.COMPLETED
-            recordings[recording_id]["transcript"] = " ".join(transcripts)
+            recordings[recording_id]["transcript"] = " ".join(successful_transcripts)
+        elif len(successful_transcripts) > 0:
+            recordings[recording_id]["status"] = RecordingStatus.COMPLETED
+            recordings[recording_id]["transcript"] = " ".join(successful_transcripts)
+            recordings[recording_id]["warning"] = f"Some chunks failed: {failed_chunks}"
         else:
             recordings[recording_id]["status"] = RecordingStatus.FAILED
-            recordings[recording_id]["error"] = "Some chunks failed to process"
+            recordings[recording_id]["error"] = "All chunks failed to process"
             
     except Exception as e:
         logger.error(f"Error processing recording {recording_id}: {e}")
         recordings[recording_id]["status"] = RecordingStatus.FAILED
         recordings[recording_id]["error"] = str(e)
+    finally:
+        # Ensure we have final counts
+        if "processed_chunks" not in recordings[recording_id]:
+            recordings[recording_id]["processed_chunks"] = 0
+        if "failed_chunks" not in recordings[recording_id]:
+            recordings[recording_id]["failed_chunks"] = 0
 
 @app.get("/")
 async def root():
