@@ -3,35 +3,37 @@ import './App.css';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
-  const [audioChunks, setAudioChunks] = useState([]);
-  const [transcriptions, setTranscriptions] = useState([]);
+  const [recordingId, setRecordingId] = useState(null);
+  const [recordings, setRecordings] = useState([]);
   const [error, setError] = useState(null);
-  const [deviceStatus, setDeviceStatus] = useState('unchecked'); // 'unchecked' | 'available' | 'unavailable'
+  const [deviceStatus, setDeviceStatus] = useState('unchecked');
   const [isTestMode, setIsTestMode] = useState(false);
   const mediaRecorder = useRef(null);
-  const chunkInterval = useRef(null);
-  
-  // Test mode toggle
-  const toggleTestMode = () => {
-    setIsTestMode(!isTestMode);
-    setDeviceStatus(isTestMode ? 'unchecked' : 'available');
-    setError(null);
-  };
+  const audioChunks = useRef([]);
 
   useEffect(() => {
-    // Load existing transcriptions
-    fetchTranscriptions();
-    
-    // Check for audio device availability
+    // Load existing recordings
+    fetchRecordings();
+    // Check device status
     checkAudioDevice();
   }, []);
+
+  const fetchRecordings = async () => {
+    try {
+      const response = await fetch('http://localhost:55285/recordings');
+      const data = await response.json();
+      setRecordings(data.recordings);
+    } catch (error) {
+      console.error('Error fetching recordings:', error);
+      setError('Failed to load recordings');
+    }
+  };
 
   const checkAudioDevice = async () => {
     try {
       // First request permission
       await navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
-          // Stop the stream immediately
           stream.getTracks().forEach(track => track.stop());
           setDeviceStatus('available');
           setError(null);
@@ -40,60 +42,24 @@ function App() {
           console.error('Permission error:', err);
           setDeviceStatus('unavailable');
           setError('Microphone permission denied. Please allow microphone access.');
-          return false;
         });
-
-      // Then check available devices
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const hasAudioDevice = devices.some(device => device.kind === 'audioinput');
-      
-      if (!hasAudioDevice) {
-        setDeviceStatus('unavailable');
-        setError('No audio input device found. Please connect a microphone.');
-        return false;
-      }
-
-      return true;
     } catch (err) {
       console.error('Device check error:', err);
       setDeviceStatus('unavailable');
       setError('Could not access audio devices. Please check permissions.');
-      return false;
-    }
-  };
-
-  const fetchTranscriptions = async () => {
-    try {
-      const response = await fetch('http://localhost:55285/transcriptions');
-      const data = await response.json();
-      setTranscriptions(data);
-    } catch (error) {
-      console.error('Error fetching transcriptions:', error);
     }
   };
 
   const startRecording = async () => {
     try {
       setError(null);
+      audioChunks.current = [];
       
       if (isTestMode) {
-        // Simulate recording in test mode
         setIsRecording(true);
-        
-        // Simulate chunks every 8 minutes
-        chunkInterval.current = setInterval(() => {
-          const testAudioBlob = new Blob(['Test audio data'], { type: 'audio/webm' });
-          setAudioChunks(chunks => [...chunks, testAudioBlob]);
-        }, 8 * 60 * 1000); // 8 minutes
-        
-        // Simulate first chunk immediately
-        const initialTestBlob = new Blob(['Initial test audio data'], { type: 'audio/webm' });
-        setAudioChunks(chunks => [...chunks, initialTestBlob]);
-        
         return;
       }
       
-      // Normal recording mode
       if (deviceStatus !== 'available') {
         const deviceAvailable = await checkAudioDevice();
         if (!deviceAvailable) {
@@ -101,7 +67,6 @@ function App() {
         }
       }
 
-      // Get audio stream with specific constraints
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -112,164 +77,89 @@ function App() {
         }
       });
       
-      // Find supported MIME type
-      const mimeTypes = [
-        'audio/webm',
-        'audio/webm;codecs=opus',
-        'audio/wav'
-      ];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/wav';
       
-      const selectedMimeType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
-      
-      if (!selectedMimeType) {
-        throw new Error('No supported audio format found. Please use a modern browser.');
-      }
-      
-      // Create MediaRecorder with optimal settings
       mediaRecorder.current = new MediaRecorder(stream, {
-        mimeType: selectedMimeType,
-        audioBitsPerSecond: 32000 // 32kbps for good quality speech
+        mimeType: mimeType,
+        audioBitsPerSecond: 32000
       });
       
       mediaRecorder.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          setAudioChunks(chunks => [...chunks, event.data]);
+          audioChunks.current.push(event.data);
         }
       };
 
-      mediaRecorder.current.onerror = (event) => {
-        setError('Recording error: ' + event.error.message);
-        stopRecording();
-      };
-
-      mediaRecorder.current.start(1000); // Capture every second for smoother experience
+      mediaRecorder.current.start(1000); // Capture every second
       setIsRecording(true);
 
-      // Create 8-minute chunks
-      chunkInterval.current = setInterval(() => {
-        if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
-          mediaRecorder.current.stop();
-          mediaRecorder.current.start(1000);
-        }
-      }, 8 * 60 * 1000); // 8 minutes in milliseconds
-
     } catch (error) {
-      console.error('Error accessing microphone:', error);
-      setError(error.message || 'Error accessing microphone');
+      console.error('Error starting recording:', error);
+      setError(error.message || 'Error starting recording');
       setIsRecording(false);
     }
   };
 
-  const stopRecording = () => {
-    if (isTestMode) {
-      clearInterval(chunkInterval.current);
-      setIsRecording(false);
-      return;
-    }
-    
-    if (mediaRecorder.current) {
-      mediaRecorder.current.stop();
-      clearInterval(chunkInterval.current);
-      mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
-    }
-    setIsRecording(false);
-  };
-
-  const uploadChunk = async (chunk) => {
+  const stopRecording = async () => {
     try {
-      // Handle test mode with mock responses
       if (isTestMode) {
-        const mockResponses = [
-          "नमस्ते, मैं हिंदी में बात कर रहा हूं।",
-          "आज का मौसम बहुत अच्छा है।",
-          "यह एक परीक्षण मोड प्रतिलिपि है।",
-          "हम एक नई तकनीक का परीक्षण कर रहे हैं।"
-        ];
-        
-        const mockResponse = {
-          text: mockResponses[Math.floor(Math.random() * mockResponses.length)],
-          timestamp: new Date().toISOString(),
-          duration: 8.0,
-          source: "test_mode",
-          filename: `test-chunk-${Date.now()}.webm`
-        };
-
-        setTranscriptions(prev => [mockResponse, ...prev]);
+        setIsRecording(false);
+        // Simulate a test recording
+        const response = await fetch('http://localhost:55285/recordings', {
+          method: 'POST',
+          body: new Blob(['test audio data'], { type: 'audio/webm' })
+        });
+        const result = await response.json();
+        setRecordingId(result.recording_id);
         return;
       }
 
-      // Normal mode processing
-      const timestamp = new Date().getTime();
-      const extension = chunk.type.includes('webm') ? 'webm' : 'wav';
-      const filename = `audio-chunk-${timestamp}.${extension}`;
-      
-      if (chunk.size > 10 * 1024 * 1024) {
-        throw new Error('Audio chunk too large. Maximum size is 10MB.');
-      }
-      
-      const formData = new FormData();
-      formData.append('audio', chunk, filename);
-
-      const response = await fetch('http://localhost:55285/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-
-      let responseData;
-      try {
-        responseData = await response.json();
-      } catch (e) {
-        throw new Error('Failed to parse server response');
-      }
-
-      if (!response.ok) {
-        throw new Error(responseData.detail || `Server error: ${response.status}`);
-      }
-
-      if (responseData.text && responseData.text.trim()) {
-        if (responseData.text.startsWith('Error') || responseData.text.startsWith('No speech')) {
-          console.warn('Transcription issue:', responseData.text);
-          return;
+      if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
+        mediaRecorder.current.stop();
+        mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
+        
+        // Create a single blob from all chunks
+        const audioBlob = new Blob(audioChunks.current, { 
+          type: mediaRecorder.current.mimeType 
+        });
+        
+        // Upload the complete recording
+        const formData = new FormData();
+        formData.append('audio', audioBlob);
+        
+        const response = await fetch('http://localhost:55285/recordings', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to upload recording');
         }
-
-        setTranscriptions(prev => [{
-          ...responseData,
-          timestamp: new Date(responseData.timestamp).toISOString(),
-          filename: filename
-        }, ...prev]);
-
-        setError(null);
+        
+        const result = await response.json();
+        setRecordingId(result.recording_id);
+        
+        // Clear recording state
+        setIsRecording(false);
+        audioChunks.current = [];
+        
+        // Refresh recordings list
+        fetchRecordings();
       }
     } catch (error) {
-      console.error('Error uploading chunk:', error);
-      
-      let errorMessage = error.message;
-      if (errorMessage.includes('too large')) {
-        errorMessage = 'Recording chunk too large. Please use shorter recordings.';
-      } else if (errorMessage.includes('format')) {
-        errorMessage = 'Unsupported audio format. Please use a different browser.';
-      } else if (errorMessage.includes('API') || errorMessage.includes('server')) {
-        errorMessage = 'Transcription service error. Please try again later.';
-      }
-      
-      setError(errorMessage);
-      return null;
+      console.error('Error stopping recording:', error);
+      setError(error.message || 'Error stopping recording');
+      setIsRecording(false);
     }
   };
 
-  // Process audio chunks
-  useEffect(() => {
-    const processChunk = async () => {
-      if (audioChunks.length > 0) {
-        const lastChunk = audioChunks[audioChunks.length - 1];
-        if (lastChunk.size > 0) {
-          await uploadChunk(lastChunk);
-        }
-      }
-    };
-
-    processChunk();
-  }, [audioChunks]);
+  const toggleTestMode = () => {
+    setIsTestMode(!isTestMode);
+    setDeviceStatus(isTestMode ? 'unchecked' : 'available');
+    setError(null);
+  };
 
   return (
     <div className="min-h-screen bg-gray-100 p-8">
@@ -318,6 +208,7 @@ function App() {
             </div>
           )}
 
+          {/* Recording Controls */}
           <div className="flex justify-center mb-6">
             <button
               onClick={isRecording ? stopRecording : startRecording}
@@ -334,25 +225,50 @@ function App() {
             </button>
           </div>
 
+          {/* Recording Status */}
           {isRecording && (
             <div className="text-center text-sm text-gray-600">
               <div className="recording-indicator inline-block w-2 h-2 bg-red-500 rounded-full mr-2"></div>
-              {isTestMode ? 'Test recording in progress...' : 'Recording in progress... Audio will be processed in 8-minute chunks'}
+              {isTestMode ? 'Test recording in progress...' : 'Recording in progress...'}
             </div>
           )}
         </div>
 
+        {/* Recordings List */}
         <div className="bg-white rounded-lg shadow-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Transcriptions</h2>
+          <h2 className="text-xl font-semibold mb-4">Recordings</h2>
           <div className="space-y-4">
-            {transcriptions.map((trans, index) => (
-              <div key={index} className="border-b pb-4">
-                <p className="text-gray-800">{trans.text}</p>
-                <div className="text-sm text-gray-500 mt-2">
-                  {new Date(trans.timestamp).toLocaleString()} - Duration: {trans.duration}s
+            {recordings.map((recording) => (
+              <div key={recording.id} className="border-b pb-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-sm text-gray-500">
+                      {new Date(recording.timestamp).toLocaleString()}
+                    </p>
+                    <p className="text-gray-700">
+                      Duration: {Math.round(recording.duration)}s
+                    </p>
+                  </div>
+                  <span className={`px-2 py-1 rounded text-xs ${
+                    recording.status === 'completed' ? 'bg-green-100 text-green-800' :
+                    recording.status === 'failed' ? 'bg-red-100 text-red-800' :
+                    'bg-yellow-100 text-yellow-800'
+                  }`}>
+                    {recording.status}
+                  </span>
                 </div>
+                {recording.has_transcript && (
+                  <div className="mt-2">
+                    <p className="text-gray-800 whitespace-pre-wrap">
+                      {recording.transcript}
+                    </p>
+                  </div>
+                )}
               </div>
             ))}
+            {recordings.length === 0 && (
+              <p className="text-gray-500 text-center">No recordings yet</p>
+            )}
           </div>
         </div>
       </div>
