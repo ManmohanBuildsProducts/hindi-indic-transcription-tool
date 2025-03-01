@@ -18,8 +18,9 @@ import tempfile
 
 # Constants
 SARVAM_API_KEY = "ec7650e8-3560-48c7-8c69-649f1c659680"
-SARVAM_API_URL = "https://api.sarvam.ai/v1/transcribe"
+SARVAM_API_URL = "https://api.sarvam.ai/v1/transcribe/batch"  # Updated to batch API
 CHUNK_DURATION = 8 * 60 * 1000  # 8 minutes in milliseconds
+MAX_RETRIES = 3  # Maximum retries for API calls
 
 # Initialize FastAPI app
 app = FastAPI(title="Hindi Audio Transcription API")
@@ -84,11 +85,11 @@ def split_audio(audio_data: bytes, format: str) -> List[AudioSegment]:
         raise HTTPException(status_code=400, detail="Failed to process audio file")
 
 async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: str) -> str:
-    """Transcribe a single audio chunk"""
+    """Transcribe a single audio chunk using Sarvam AI batch API"""
     try:
-        # Export chunk to bytes
+        # Export chunk to WAV format
         chunk_file = io.BytesIO()
-        chunk.export(chunk_file, format='wav')
+        chunk.export(chunk_file, format='wav', parameters=["-ac", "1", "-ar", "16000"])
         chunk_data = chunk_file.getvalue()
         
         # Convert to base64
@@ -100,9 +101,10 @@ async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: 
         }
         
         data = {
-            "audio_base64": audio_base64,
-            "language": "hi",
-            "task": "transcribe"
+            "audio": audio_base64,
+            "source_lang": "hi",
+            "task_type": "transcribe",
+            "audio_format": "wav"
         }
         
         job_id = str(uuid.uuid4())
@@ -114,41 +116,66 @@ async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: 
         
         logger.info(f"Processing chunk {chunk_index} for recording {recording_id}")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.post(SARVAM_API_URL, headers=headers, json=data) as response:
-                response_text = await response.text()
+        # Implement retry logic
+        retries = 0
+        while retries < MAX_RETRIES:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(SARVAM_API_URL, headers=headers, json=data) as response:
+                        response_text = await response.text()
+                        
+                        if response.status == 200:
+                            try:
+                                result = json.loads(response_text)
+                                transcribed_text = result.get("text", "").strip()
+                                
+                                if transcribed_text:
+                                    jobs[job_id]["status"] = "completed"
+                                    jobs[job_id]["transcript"] = transcribed_text
+                                    return transcribed_text
+                                else:
+                                    logger.warning(f"Empty transcription for chunk {chunk_index}")
+                                    jobs[job_id]["status"] = "completed"
+                                    jobs[job_id]["transcript"] = ""
+                                    return ""
+                                    
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Failed to parse response for chunk {chunk_index}: {e}")
+                                if retries == MAX_RETRIES - 1:
+                                    jobs[job_id]["status"] = "failed"
+                                    jobs[job_id]["error"] = "Failed to parse API response"
+                                    return None
+                        
+                        elif response.status == 429:  # Rate limit
+                            await asyncio.sleep(2 ** retries)  # Exponential backoff
+                        
+                        else:
+                            error_msg = f"API error: {response_text}"
+                            logger.error(error_msg)
+                            if retries == MAX_RETRIES - 1:
+                                jobs[job_id]["status"] = "failed"
+                                jobs[job_id]["error"] = error_msg
+                                return None
                 
-                if response.status != 200:
-                    error_msg = f"Chunk {chunk_index} failed: {response_text}"
-                    logger.error(error_msg)
+            except Exception as e:
+                logger.error(f"Request error for chunk {chunk_index}: {e}")
+                if retries == MAX_RETRIES - 1:
                     jobs[job_id]["status"] = "failed"
-                    jobs[job_id]["error"] = error_msg
+                    jobs[job_id]["error"] = str(e)
                     return None
-                
-                try:
-                    result = json.loads(response_text)
-                    transcribed_text = result.get("text", "").strip()
-                    
-                    if not transcribed_text:
-                        logger.warning(f"Empty transcription for chunk {chunk_index}")
-                        jobs[job_id]["status"] = "completed"
-                        jobs[job_id]["transcript"] = ""
-                        return ""
-                    
-                    jobs[job_id]["status"] = "completed"
-                    jobs[job_id]["transcript"] = transcribed_text
-                    return transcribed_text
-                    
-                except json.JSONDecodeError as e:
-                    error_msg = f"Failed to parse response for chunk {chunk_index}: {e}"
-                    logger.error(error_msg)
-                    jobs[job_id]["status"] = "failed"
-                    jobs[job_id]["error"] = error_msg
-                    return None
+            
+            retries += 1
+            if retries < MAX_RETRIES:
+                await asyncio.sleep(1)  # Wait before retry
+        
+        return None
                     
     except Exception as e:
         error_msg = f"Error processing chunk {chunk_index}: {e}"
         logger.error(error_msg)
+        if job_id in jobs:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = error_msg
         return None
 
 async def process_recording(recording_id: str, audio_chunks: List[AudioSegment]):
