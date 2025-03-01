@@ -34,9 +34,26 @@ function App() {
     checkAudioDevice();
   }, []);
 
+  const pollRecordingStatus = async (recordingId) => {
+    try {
+      const response = await fetch(`http://localhost:55285/recordings/${recordingId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch recording status');
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error polling status:', error);
+      return null;
+    }
+  };
+
   const fetchRecordings = async () => {
     try {
       const response = await fetch('http://localhost:55285/recordings');
+      if (!response.ok) {
+        throw new Error('Failed to fetch recordings');
+      }
       const data = await response.json();
       setRecordings(data.recordings);
     } catch (error) {
@@ -366,31 +383,52 @@ function App() {
                       Duration: {Math.round(recording.duration)}s
                     </p>
                   </div>
-                  <span className={`px-2 py-1 rounded text-xs ${
-                    recording.status === 'completed' ? 'bg-green-100 text-green-800' :
-                    recording.status === 'failed' ? 'bg-red-100 text-red-800' :
-                    'bg-yellow-100 text-yellow-800'
-                  }`}>
-                    {recording.status}
-                  </span>
+                  <div className="flex items-center">
+                    {recording.status === 'processing' && (
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent mr-2"></div>
+                    )}
+                    <span className={`px-2 py-1 rounded text-xs ${
+                      recording.status === 'completed' ? 'bg-green-100 text-green-800' :
+                      recording.status === 'failed' ? 'bg-red-100 text-red-800' :
+                      'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {recording.status === 'completed' ? 'Completed' :
+                       recording.status === 'failed' ? 'Failed' :
+                       'Processing'}
+                    </span>
+                  </div>
                 </div>
-                <div className="mt-4 transcript-text">
+
+                <div className="mt-4">
                   {recording.status === 'completed' && recording.transcript && (
-                    <div>
+                    <div className="bg-gray-50 rounded-lg p-4">
                       <h3 className="text-sm font-semibold text-gray-500 mb-2">Transcription:</h3>
-                      <p className="text-gray-800 whitespace-pre-wrap font-hindi text-lg">
-                        {recording.transcript}
-                      </p>
+                      <div className="bg-white rounded p-4 shadow-sm">
+                        <p className="text-gray-800 whitespace-pre-wrap font-hindi text-lg leading-relaxed">
+                          {recording.transcript}
+                        </p>
+                      </div>
+                      <div className="mt-2 flex justify-end">
+                        <button 
+                          onClick={() => navigator.clipboard.writeText(recording.transcript)}
+                          className="text-sm text-blue-600 hover:text-blue-800"
+                        >
+                          Copy Text
+                        </button>
+                      </div>
                     </div>
                   )}
+                  
                   {recording.status === 'processing' && (
-                    <div className="flex items-center justify-center py-4">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mr-3"></div>
-                      <p className="text-blue-600">Processing transcription...</p>
+                    <div className="flex flex-col items-center justify-center py-6 bg-blue-50 rounded-lg">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                      <p className="text-blue-600 mt-2">Processing your recording...</p>
+                      <p className="text-sm text-blue-400">This may take a few moments</p>
                     </div>
                   )}
+                  
                   {recording.status === 'failed' && (
-                    <div className="bg-red-50 border-l-4 border-red-500 p-4">
+                    <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg">
                       <div className="flex items-center">
                         <div className="flex-shrink-0">
                           <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
@@ -398,10 +436,19 @@ function App() {
                           </svg>
                         </div>
                         <div className="ml-3">
-                          <p className="text-sm text-red-700">
-                            {recording.error || 'Failed to process recording'}
+                          <h3 className="text-sm font-medium text-red-800">Processing Failed</h3>
+                          <p className="text-sm text-red-700 mt-1">
+                            {recording.error || 'An error occurred while processing the recording'}
                           </p>
                         </div>
+                      </div>
+                      <div className="mt-3">
+                        <button
+                          onClick={() => window.location.reload()}
+                          className="text-sm text-red-700 hover:text-red-900 underline"
+                        >
+                          Try Again
+                        </button>
                       </div>
                     </div>
                   )}

@@ -202,19 +202,29 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
             recording_id = str(uuid.uuid4())
             test_transcript = "नमस्ते, यह एक परीक्षण प्रतिलेख है। हम हिंदी ट्रांसक्रिप्शन टूल का परीक्षण कर रहे हैं।"
             
+            # Create recording entry
             recordings[recording_id] = {
                 "id": recording_id,
                 "timestamp": datetime.now(),
                 "duration": 30.0,  # Simulated 30-second recording
-                "status": RecordingStatus.COMPLETED,
-                "transcript": test_transcript,
+                "status": RecordingStatus.PROCESSING,
+                "transcript": None,
                 "error": None
             }
             
+            # Simulate processing delay
+            async def process_test_recording():
+                await asyncio.sleep(2)  # Simulate 2-second processing
+                recordings[recording_id]["status"] = RecordingStatus.COMPLETED
+                recordings[recording_id]["transcript"] = test_transcript
+            
+            # Process in background
+            background_tasks.add_task(process_test_recording)
+            
             return {
                 "recording_id": recording_id,
-                "status": RecordingStatus.COMPLETED,
-                "message": "Test recording processed"
+                "status": RecordingStatus.PROCESSING,
+                "message": "Test recording is being processed"
             }
 
         # Handle real recording
