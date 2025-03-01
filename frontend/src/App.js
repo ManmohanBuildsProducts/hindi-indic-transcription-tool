@@ -30,8 +30,21 @@ function App() {
   useEffect(() => {
     // Load existing recordings
     fetchRecordings();
-    // Check device status
-    checkAudioDevice();
+    
+    // Check device status with retry
+    const checkDeviceWithRetry = async () => {
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (attempts < maxAttempts) {
+        const success = await checkAudioDevice();
+        if (success) break;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        attempts++;
+      }
+    };
+    
+    checkDeviceWithRetry();
   }, []);
 
   const pollRecordingStatus = async (recordingId) => {
@@ -178,10 +191,27 @@ function App() {
     }
   };
 
+  const waitForRecordingCompletion = async (recordingId, maxAttempts = 30) => {
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+      const status = await pollRecordingStatus(recordingId);
+      if (!status) break;
+      
+      if (status.status === 'completed' || status.status === 'failed') {
+        return status;
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      attempts++;
+    }
+    return null;
+  };
+
   const stopRecording = async () => {
     try {
       setIsRecording(false);
       setIsUploading(true);
+      setError(null);
       
       if (isTestMode) {
         // Create test recording with proper FormData
@@ -201,72 +231,96 @@ function App() {
         const result = await response.json();
         setRecordingId(result.recording_id);
         
-        // Wait a bit to simulate processing
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Wait for completion
+        const finalStatus = await waitForRecordingCompletion(result.recording_id);
+        if (!finalStatus) {
+          throw new Error('Recording processing timed out');
+        }
+        
+        if (finalStatus.status === 'failed') {
+          throw new Error(finalStatus.error || 'Recording processing failed');
+        }
         
         await fetchRecordings();
-        setIsUploading(false);
         return;
       }
 
       if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
-        // Stop recording
-        mediaRecorder.current.stop();
-        mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
-        
-        // Wait for the last chunk
-        await new Promise(resolve => setTimeout(resolve, 100));
-        
-        // Create a single blob from all chunks
-        const audioBlob = new Blob(audioChunks.current, { 
-          type: mediaRecorder.current.mimeType 
-        });
-        
-        // Upload the complete recording
-        const formData = new FormData();
-        formData.append('audio', audioBlob);
-        
-        const response = await fetch('http://localhost:55285/recordings', {
-          method: 'POST',
-          body: formData
-        });
-        
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
-          throw new Error(errorData.detail || 'Failed to upload recording');
-        }
-        
-        const result = await response.json();
-        setRecordingId(result.recording_id);
-        
-        // Clear recording state
-        audioChunks.current = [];
-        
-        // Poll for completion
-        let attempts = 0;
-        const maxAttempts = 30; // 30 seconds timeout
-        
-        while (attempts < maxAttempts) {
-          const statusResponse = await fetch(`http://localhost:55285/recordings/${result.recording_id}`);
-          const statusData = await statusResponse.json();
+        try {
+          // Stop recording
+          mediaRecorder.current.stop();
+          mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
           
-          if (statusData.status === 'completed' || statusData.status === 'failed') {
-            break;
+          // Wait for the last chunk
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          // Create a single blob from all chunks
+          const audioBlob = new Blob(audioChunks.current, { 
+            type: mediaRecorder.current.mimeType 
+          });
+          
+          // Upload the complete recording
+          const formData = new FormData();
+          formData.append('audio', audioBlob);
+          
+          const response = await fetch('http://localhost:55285/recordings', {
+            method: 'POST',
+            body: formData
+          });
+          
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: 'Upload failed' }));
+            throw new Error(errorData.detail || 'Failed to upload recording');
           }
           
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          attempts++;
+          const result = await response.json();
+          setRecordingId(result.recording_id);
+          
+          // Clear recording state
+          audioChunks.current = [];
+          
+          // Wait for completion
+          const finalStatus = await waitForRecordingCompletion(result.recording_id);
+          if (!finalStatus) {
+            throw new Error('Recording processing timed out');
+          }
+          
+          if (finalStatus.status === 'failed') {
+            throw new Error(finalStatus.error || 'Recording processing failed');
+          }
+          
+          // Refresh recordings list
+          await fetchRecordings();
+          
+        } catch (error) {
+          console.error('Error processing recording:', error);
+          setError(error.message || 'Failed to process recording');
+          
+          // Attempt to fetch recordings anyway to show any partial results
+          await fetchRecordings();
         }
-        
-        // Refresh recordings list
-        await fetchRecordings();
       }
     } catch (error) {
       console.error('Error stopping recording:', error);
       setError(error.message || 'Error stopping recording');
+      
+      // Cleanup any ongoing recording
+      if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
+        try {
+          mediaRecorder.current.stop();
+          mediaRecorder.current.stream.getTracks().forEach(track => track.stop());
+        } catch (e) {
+          console.error('Error cleaning up media recorder:', e);
+        }
+      }
+      
+      // Clear recording state
+      audioChunks.current = [];
+      
     } finally {
       setIsUploading(false);
       setIsRecording(false);
+      mediaRecorder.current = null;
     }
   };
 
