@@ -268,7 +268,11 @@ async def root():
     return {"status": "healthy", "service": "Hindi Audio Transcription API"}
 
 @app.post("/recordings")
-async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile = File(...)):
+async def create_recording(
+    background_tasks: BackgroundTasks, 
+    audio: UploadFile = File(...),
+    source: str = "microphone"
+):
     try:
         # Handle test mode
         if audio.filename == "test_recording":
@@ -282,7 +286,12 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
                 "duration": 30.0,  # Simulated 30-second recording
                 "status": RecordingStatus.PROCESSING,
                 "transcript": None,
-                "error": None
+                "error": None,
+                "source": source,
+                "format": "wav",
+                "chunks_total": 1,
+                "chunks_processed": 0,
+                "chunks_failed": 0
             }
             
             # Simulate processing delay
@@ -290,6 +299,7 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
                 await asyncio.sleep(2)  # Simulate 2-second processing
                 recordings[recording_id]["status"] = RecordingStatus.COMPLETED
                 recordings[recording_id]["transcript"] = test_transcript
+                recordings[recording_id]["chunks_processed"] = 1
             
             # Process in background
             background_tasks.add_task(process_test_recording)
@@ -297,10 +307,19 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
             return {
                 "recording_id": recording_id,
                 "status": RecordingStatus.PROCESSING,
-                "message": "Test recording is being processed"
+                "message": "Test recording is being processed",
+                "source": source,
+                "format": "wav",
+                "chunks_total": 1
             }
 
-        # Handle real recording
+        # Validate audio source
+        if source not in ["microphone", "system"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid audio source. Must be 'microphone' or 'system'"
+            )
+
         # Validate file format
         if not audio.content_type in ["audio/webm", "audio/wav", "audio/wave"]:
             raise HTTPException(
@@ -308,8 +327,20 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
                 detail="Unsupported audio format. Please use WAV or WebM format."
             )
 
-        # Read content
-        content = await audio.read()
+        # Read content with size check
+        try:
+            content = await audio.read()
+            if len(content) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Empty audio file received"
+                )
+        except Exception as e:
+            logger.error(f"Error reading audio file: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to read audio file"
+            )
         
         # Generate recording ID
         recording_id = str(uuid.uuid4())
@@ -317,8 +348,20 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
         # Get audio format
         format = "wav" if audio.content_type in ["audio/wav", "audio/wave"] else "webm"
         
-        # Split audio into chunks
-        audio_chunks = split_audio(content, format)
+        try:
+            # Split audio into chunks
+            audio_chunks = split_audio(content, format)
+            if not audio_chunks:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Failed to process audio file"
+                )
+        except Exception as e:
+            logger.error(f"Error splitting audio: {str(e)}")
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to process audio file"
+            )
         
         # Create recording entry
         recordings[recording_id] = {
@@ -327,7 +370,12 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
             "duration": sum(len(chunk) for chunk in audio_chunks) / 1000,  # duration in seconds
             "status": RecordingStatus.PROCESSING,
             "transcript": None,
-            "error": None
+            "error": None,
+            "source": source,
+            "format": format,
+            "chunks_total": len(audio_chunks),
+            "chunks_processed": 0,
+            "chunks_failed": 0
         }
         
         # Process chunks in background
@@ -336,7 +384,10 @@ async def create_recording(background_tasks: BackgroundTasks, audio: UploadFile 
         return {
             "recording_id": recording_id,
             "status": RecordingStatus.PROCESSING,
-            "message": "Recording is being processed"
+            "message": "Recording is being processed",
+            "source": source,
+            "format": format,
+            "chunks_total": len(audio_chunks)
         }
         
     except HTTPException as he:
