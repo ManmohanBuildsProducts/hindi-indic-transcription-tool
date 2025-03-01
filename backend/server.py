@@ -68,21 +68,73 @@ class ChunkJob(BaseModel):
     error: Optional[str] = None
 
 def split_audio(audio_data: bytes, format: str) -> List[AudioSegment]:
-    """Split audio into 8-minute chunks"""
+    """Split audio into 8-minute chunks with format handling"""
     try:
-        # Load audio from bytes
-        audio = AudioSegment.from_file(io.BytesIO(audio_data), format=format)
+        # Create a temporary file to handle the audio data
+        with tempfile.NamedTemporaryFile(suffix=f'.{format}', delete=False) as temp_file:
+            temp_file.write(audio_data)
+            temp_file.flush()
+            
+            try:
+                # Load audio from temp file
+                audio = AudioSegment.from_file(temp_file.name, format=format)
+            except Exception as e:
+                logger.error(f"Error loading audio with format {format}: {e}")
+                # Try alternative format
+                alt_format = 'wav' if format == 'webm' else 'webm'
+                try:
+                    audio = AudioSegment.from_file(temp_file.name, format=alt_format)
+                    logger.info(f"Successfully loaded audio with alternative format: {alt_format}")
+                except Exception as e2:
+                    logger.error(f"Error loading audio with alternative format {alt_format}: {e2}")
+                    raise
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file.name)
+        
+        if len(audio) == 0:
+            raise ValueError("Empty audio file")
+            
+        # Convert to mono and set sample rate
+        audio = audio.set_channels(1).set_frame_rate(16000)
         
         # Split into 8-minute chunks
         chunks = []
-        for i in range(0, len(audio), CHUNK_DURATION):
-            chunk = audio[i:i + CHUNK_DURATION]
-            chunks.append(chunk)
+        chunk_length = CHUNK_DURATION  # 8 minutes in milliseconds
         
+        for i in range(0, len(audio), chunk_length):
+            chunk = audio[i:i + chunk_length]
+            # Ensure chunk is not too short
+            if len(chunk) >= 1000:  # At least 1 second
+                chunks.append(chunk)
+        
+        if not chunks:
+            raise ValueError("No valid audio chunks found")
+            
         return chunks
+        
     except Exception as e:
         logger.error(f"Error splitting audio: {e}")
-        raise HTTPException(status_code=400, detail="Failed to process audio file")
+        if "ffmpeg not found" in str(e):
+            raise HTTPException(
+                status_code=500,
+                detail="Server configuration error: ffmpeg not installed"
+            )
+        elif "Empty audio file" in str(e):
+            raise HTTPException(
+                status_code=400,
+                detail="Empty audio file received"
+            )
+        elif "No valid audio chunks" in str(e):
+            raise HTTPException(
+                status_code=400,
+                detail="Audio file too short or invalid"
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to process audio file. Please check the format and try again."
+            )
 
 async def transcribe_chunk(chunk: AudioSegment, chunk_index: int, recording_id: str) -> str:
     """Transcribe a single audio chunk using Sarvam AI batch API"""

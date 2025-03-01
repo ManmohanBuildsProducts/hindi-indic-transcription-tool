@@ -45,21 +45,88 @@ function App() {
 
   const checkAudioDevice = async () => {
     try {
+      // Check browser support
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setDeviceStatus('unavailable');
-        setError('Audio recording is not supported in your browser');
+        setError('Audio recording is not supported in your browser. Please use a modern browser.');
         return false;
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Check if we're in test mode
+      if (window.location.search.includes('test=true')) {
+        setDeviceStatus('available');
+        setError(null);
+        return true;
+      }
+
+      // List available devices first
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const hasAudioDevice = devices.some(device => device.kind === 'audioinput');
+
+      if (!hasAudioDevice) {
+        setDeviceStatus('unavailable');
+        setError('No microphone found. Please connect a microphone and try again.');
+        return false;
+      }
+
+      // Request permission and test device
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      // Test if we can actually record
+      const mimeTypes = [
+        'audio/webm',
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',
+        'audio/wav'
+      ];
+
+      const supportedType = mimeTypes.find(type => MediaRecorder.isTypeSupported(type));
+      if (!supportedType) {
+        stream.getTracks().forEach(track => track.stop());
+        setDeviceStatus('unavailable');
+        setError('Your browser does not support any compatible audio format. Please use a modern browser.');
+        return false;
+      }
+
+      // Test MediaRecorder
+      try {
+        const recorder = new MediaRecorder(stream, { mimeType: supportedType });
+        recorder.stop();
+      } catch (e) {
+        stream.getTracks().forEach(track => track.stop());
+        setDeviceStatus('unavailable');
+        setError('Failed to initialize audio recorder. Please check your browser settings.');
+        return false;
+      }
+
+      // Stop all tracks
       stream.getTracks().forEach(track => track.stop());
+      
       setDeviceStatus('available');
       setError(null);
       return true;
+
     } catch (err) {
       console.error('Device check error:', err);
+      
+      // Handle specific error cases
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setError('Microphone access denied. Please allow microphone access in your browser settings.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No microphone found. Please check your microphone connection.');
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        setError('Could not access your microphone. Please check if another application is using it.');
+      } else {
+        setError('Could not access audio device. Please check your microphone and browser settings.');
+      }
+      
       setDeviceStatus('unavailable');
-      setError('Could not access microphone. Please check permissions.');
       return false;
     }
   };
